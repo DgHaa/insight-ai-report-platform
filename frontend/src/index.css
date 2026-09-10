@@ -1,0 +1,257 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+/* AIHOT 轻量信息流风格：卡片 hover 动效 */
+.report-card {
+  border-radius: 12px;
+  transition: all 0.25s ease;
+  cursor: pointer;
+}
+.report-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+}
+
+/* Markdown 正文样式 */
+.markdown-body {
+  line-height: 1.8;
+  font-size: 14px;
+}
+.markdown-body pre {
+  background: #f6f8fa;
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+.markdown-body code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3 {
+  margin-top: 18px;
+}
+
+/* 版本对比颜色 */
+.diff-add {
+  background: rgba(82, 196, 26, 0.15);
+  color: #237804;
+}
+.diff-remove {
+  background: rgba(255, 77, 79, 0.15);
+  color: #a8071a;
+  text-decoration: line-through;
+}
+
+/* ==================== 报告风格渲染（CSS 变量由容器注入） ==================== */
+.report-content {
+  background: var(--report-bg, #ffffff);
+  color: var(--report-title-color, #0f1b33);
+  border: 1px solid var(--report-table-border, #d6e4ff);
+  border-radius: 8px;
+  padding: 20px 24px;
+  font-family: var(--report-font);
+}
+.report-content .markdown-body {
+  font-size: var(--report-body-size, 15px);
+  line-height: var(--report-line-height, 1.8);
+  color: var(--report-title-color, #0f1b33);
+}
+.report-content .markdown-body h1,
+.report-content .markdown-body h2,
+.report-content .markdown-body h3,
+.report-content .markdown-body h4 {
+  color: var(--report-title-color, #0f1b33);
+}
+.report-content .markdown-body h1 { font-size: var(--report-title-size, 24px); }
+.report-content .markdown-body h2 { font-size: calc(var(--report-title-size, 24px) - 2px); }
+.report-content .markdown-body h3 { font-size: calc(var(--report-title-size, 24px) - 4px); }
+/* 标题下划线使用主色，让风格切换肉眼可见 */
+.report-content .markdown-body h1 {
+  border-left: 4px solid var(--report-primary, #1677ff);
+  padding-left: 10px;
+}
+.report-content .markdown-body h2,
+.report-content .markdown-body h3 {
+  border-bottom: 2px solid var(--report-primary, #1677ff);
+  padding-bottom: 6px;
+}
+.report-content .markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  border: 1px solid var(--report-table-border, #d6e4ff);
+}
+.report-content .markdown-body th,
+.report-content .markdown-body td {
+  border: 1px solid var(--report-table-border, #d6e4ff);
+  padding: 6px 10px;
+}
+.report-content .markdown-body th {
+  background: var(--report-quote-bg, #f0f5ff);
+  color: var(--report-title-color, #0f1b33);
+  font-weight: 600;
+}
+.report-content .markdown-body blockquote {
+  background: var(--report-quote-bg, #f0f5ff);
+  border-left: 4px solid var(--report-quote-border, #1677ff);
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-radius: 0 4px 4px 0;
+}
+.report-content .markdown-body pre {
+  background: var(--report-code-bg, #f6f8fa);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+}
+.report-content .markdown-body code {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  background: var(--report-code-bg, #f6f8fa);
+  color: var(--report-code-color, #c41d7f);
+}
+.report-content .markdown-body pre code {
+  background: transparent;
+  color: inherit;
+}
+.report-content .markdown-body a {
+  color: var(--report-primary, #1677ff);
+}
+
+/* 登录页背景 */
+.login-page {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1677ff22 0%, #722ed122 100%);
+}
+
+/* ==================== 报告卡片等高布局 ==================== */
+/*
+  实现原理（方案一：纯 CSS Flexbox 等高）：
+  1. Row align="stretch" 使同一行的 Col 拉伸至该行最高高度；
+  2. Col 自身 display:flex，Card 通过 align-self:stretch 填满 Col 高度；
+  3. Card 与 Card-body 均为纵向 flex，描述区 flex-grow 吃掉多余空间，
+     从而让底部信息（创建人/时间/标签）始终贴底对齐；
+  4. 标题最多 2 行、描述最多 3 行，超出显示省略号，避免撑高卡片。
+
+  ⚠️ 注意：所有弹性项必须使用 flex-basis:auto（默认），
+     切勿使用 flex-basis:0 —— 在 height:auto 的卡片链中会导致
+     高度塌陷为 0、内容溢出卡片边界、卡片互相重叠。
+*/
+.report-card-col {
+  display: flex;
+}
+
+.report-card-col > .ant-card {
+  width: 100%;
+  align-self: stretch; /* 高度填满 Col（flex 默认即 stretch，显式声明更稳妥） */
+  display: flex;
+  flex-direction: column;
+}
+
+.report-card-col > .ant-card > .ant-card-body {
+  flex: 1 1 auto; /* basis=auto：以内容高度为基准再弹性撑满，避免塌陷 */
+  display: flex;
+}
+
+/* 卡片内容整体为纵向 flex */
+.report-card .report-card-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* 标题区：标题（最多 2 行省略） + 状态/公开徽标 */
+.report-card-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-height: 46px; /* 固定两行标题高度，保证所有卡片头部一致 */
+}
+
+.report-card-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+  /* 最多 2 行省略 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.report-card-badges {
+  flex-shrink: 0;
+  display: flex;
+  gap: 4px;
+}
+
+/* 描述区：最多 3 行省略（CSS line-clamp，避免 JS 测量在 flex 中不稳定），
+   flex-grow 撑开使底部信息对齐 */
+.report-card .report-card-desc {
+  flex: 1 1 auto;
+  margin: 6px 0 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 中间信息行（部门/版本/生成次数） */
+.report-card-tags {
+  margin-bottom: 10px;
+}
+
+/* 底部信息：固定在卡片底部，上方分割线隔开。
+   keywords 固定 2 行占位 → footer 总高恒定，meta（创建人/时间）与
+   标签区在所有卡片间严格对齐；标签贴底、meta 顶部对齐 */
+.report-card-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(5, 5, 5, 0.06);
+  padding-top: 8px;
+}
+
+.report-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+/* 保证 meta 恒为一行：创建人省略、时间不收缩 */
+.report-card-meta .ant-typography {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.report-card-keywords {
+  min-height: 44px; /* 2 行标签高度占位，保证有无标签 footer 高度一致 */
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  margin-top: auto;
+}
+

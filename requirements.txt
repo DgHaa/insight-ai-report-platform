@@ -1,0 +1,43 @@
+alembic==1.14.0
+asyncpg==0.29.0
+bcrypt==4.1.2
+pydantic-settings==2.3.4
+SQLAlchemy==2.0.32
+greenlet==3.0.3
+
+# ---- Web 框架 ----
+fastapi>=0.111.0,<1.0.0
+uvicorn[standard]>=0.30.0
+
+# ---- JWT 认证 ----
+PyJWT>=2.8.0
+
+# ---- 凭据静态加密（Fernet，app/core/crypto.py）----
+cryptography>=42.0.0
+
+# ---- 定时报告调度（cron 表达式解析）----
+croniter>=2.0.0
+
+# ---- HTTP 客户端（模型调用/连接测试） ----
+httpx>=0.27.0
+
+# ---- 导出（pdf/docx/md） ----
+python-docx>=1.1.0
+reportlab>=4.2.0
+
+# ---- 邮件 ----
+aiosmtplib>=3.0.1
+
+# ---- 邮箱格式校验 ----
+email-validator>=2.1.0
+
+# ---- 并发控制 / Redis FIFO 队列 / Celery 任务 ----
+redis>=5.0.0
+celery[redis]>=5.3.0
+
+# ---- 外部数据抓取（Requests 静态页 + Playwright JS 渲染） ----
+requests[socks]>=2.31.0
+beautifulsoup4>=4.12.0
+# playwright 安装后需执行: playwright install chromium
+playwright>=1.44.0
+

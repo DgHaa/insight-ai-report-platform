@@ -1,0 +1,1208 @@
+## 一、《系统设计说明书（终稿）》
+
+### 1.1 项目概述
+
+**平台名称**：服务部AI洞察平台
+
+**平台定位**：为终端BG服务部11个部门提供AI驱动的定制化洞察报告生成与管理服务。
+
+**目标用户**：50-200人规模，覆盖11个部门。
+
+**部署方式**：私有化部署（Docker + Docker Compose）。
+
+
+### 1.2 用户角色与权限
+
+| 角色 | 说明 | 核心权限 |
+|------|------|----------|
+| **超级管理员** | 平台最高权限者 | 查看所有部门报告；管理所有用户；系统配置；维护全局外部邮箱白名单 |
+| **部门管理员** | 每个部门1位 | 管理本部门用户（添加/删除/角色调整）；创建/编辑/删除部门级报告；查看本部门所有报告；设置部门公共模型配置；查看部门数据统计看板 |
+| **普通用户** | 部门成员 | 创建/编辑/删除个人报告；设置报告公开/不公开；查看被公开的个人报告及部门报告 |
+
+**部门列表**（11个）：
+1. Care业务部[终端BG]
+2. 服务质量与运营官[终端BG]
+3. IoT产品服务部[终端BG]
+4. 平板与PC产品服务部[终端BG]
+5. 全球服务部HRD[终端BG]
+6. 手机产品服务部[终端BG]
+7. 终端BG备件管理部
+8. 终端BG服务MKT与解决方案销售部
+9. 终端BG服务财经管理部
+10. 终端BG线上服务部
+11. （预留扩展）
+
+
+### 1.3 核心功能模块
+
+#### 1.3.1 报告定制模块
+
+**（1）报告基本信息**
+
+| 字段 | 说明 | 必填 |
+|------|------|------|
+| 报告标题 | 自定义标题 | ✅ |
+| 报告描述 | 简要说明报告用途 | ❌ |
+| 报告类型 | 部门报告 / 个人报告（自动判定） | 自动 |
+| 所属部门 | 用户所在部门（自动关联） | 自动 |
+| 公开状态 | 公开 / 不公开（仅个人报告可设置） | ✅ |
+| 标签 | 用于分类和检索 | ❌ |
+
+**（2）报告模块配置**
+
+每个报告可包含**多个内容模块**，每个模块独立配置：
+
+| 配置项 | 说明 |
+|--------|------|
+| 模块标题 | 自定义模块名称 |
+| 模型提供商 | 昇腾 / OpenAI / Anthropic / 自定义 |
+| API地址 | 模型服务API端点 |
+| API密钥 | 加密存储，前端仅显示最后4位 |
+| 模型名称 | 如 Qwen3.8-27B、GPT-4o |
+| 超参数 | temperature、max_tokens、top_p |
+| 关键词 | 一个或多个关键词 |
+| 查询Prompt | 自定义提示词 |
+| 数据源 | 外部链接（支持多个URL） |
+| 抓取配置 | 超时时间、重试次数、内容截断长度、代理、Cookie、自定义Header |
+| 调度频率 | 手动 / 每日 / 每周 / 每月 |
+
+**（3）用户级数据源凭证库**
+
+用户可在个人中心预设多套“数据源凭证”（代理、Cookie、自定义Header），创建模块时直接下拉引用。修改一处凭证，所有引用该凭证的模块同步生效。
+
+#### 1.3.2 报告生成模块
+
+**（1）生成流程**
+
+```
+用户触发生成（手动/定时）→ 解析报告配置 → 串行执行各模块：
+  模块N：抓取外部链接（如有）→ 构建Prompt → 调用模型API → 解析结果 → 存储
+→ 生成历史版本 → 更新报告状态 → 触发邮件通知（如配置）
+```
+
+**执行策略**：多模块**全串行执行**，严格按照模块顺序依次完成。
+
+**（2）并发控制**
+
+| 参数 | 设定值 |
+|------|--------|
+| 全局最大并发任务数 | **5个** |
+| 排队机制 | 超出5个的任务自动进入Redis等待队列，FIFO顺序执行 |
+| Worker配置 | 每个Worker同时处理1个任务，共5个容器实例 |
+
+**（3）超时与终止**
+
+| 策略 | 说明 |
+|------|------|
+| 系统硬止损 | **30分钟**，超时强制标记为“超时失败”并释放Worker |
+| 用户手动终止 | 提供“手动终止”按钮，用户可主动放弃卡死的任务 |
+| 终止后果 | **完全丢弃**本次生成的所有内容，历史版本不变 |
+
+**（4）实时进度展示**
+
+通过WebSocket推送进度，分阶段展示：
+
+| 阶段 | 进度占比 | 状态描述 |
+|------|----------|----------|
+| 初始化 | 5% | 正在解析报告配置... |
+| 抓取外部数据 | 10%~40% | 正在抓取 [URL 1/3]... |
+| 构建Prompt | 45% | 正在整合上下文信息... |
+| 调用模型生成 | 50%~90% | 正在调用 [模型名] 生成... |
+| 格式化存储 | 95% | 正在生成历史版本并保存... |
+| 完成 | 100% | 生成成功！ |
+
+#### 1.3.3 报告管理模块
+
+**（1）报告列表视图**
+
+| 视图 | 说明 |
+|------|------|
+| 我的报告 | 当前用户创建的所有报告 |
+| 部门报告 | 当前部门所有报告（**强制对内公开**，部门管理员不可设为不公开） |
+| 公开报告 | 全平台被设置为公开的个人报告 |
+| 全部报告 | 超级管理员可见所有部门所有报告 |
+
+**（2）历史版本管理**
+
+| 规则 | 说明 |
+|------|------|
+| 版本升版条件 | **配置发生变更时**（与上次成功生成的配置JSON对比有差异）才累加版本号（V+1） |
+| 覆盖规则 | 配置未变时重新生成，**覆盖**当前最新版本（不增加版本号） |
+| 版本操作 | 支持查看历史版本列表、版本对比、版本回滚 |
+| 永久保存 | 所有历史版本永久保留，不可删除 |
+
+#### 1.3.4 模型接入模块
+
+**（1）支持的模型类型**
+
+| 模型类型 | 接入方式 |
+|----------|----------|
+| 昇腾模型 | 华为云MaaS API / MindIE推理引擎 |
+| OpenAI | 标准OpenAI API |
+| Anthropic | Claude API |
+| 自定义 | 兼容OpenAI格式的API |
+
+**（2）连接测试**
+
+用户填写配置后可点击“测试连接”，后端发起轻量请求验证连通性，返回成功/失败及响应时间。
+
+**（3）安全规范**
+
+- 所有API Key使用AES-256加密存储
+- 前端永不返回完整密钥（仅显示最后4位）
+- 支持密钥轮换
+
+#### 1.3.5 外部数据源抓取模块
+
+**（1）抓取配置**
+
+| 配置项 | 说明 |
+|--------|------|
+| 代理设置 | 支持HTTP/HTTPS/SOCKS5代理，加密存储 |
+| Cookie管理 | 支持手动粘贴Cookie字符串或上传JSON格式Session文件 |
+| 请求头伪装 | 默认提供Chrome/Firefox最新UA，支持自定义Header |
+| 抓取超时 | 用户可设置单个URL的超时时间（如5s、10s、30s） |
+| 重试策略 | 用户可设置失败重试次数（0~3次）及重试间隔 |
+| 内容截断 | 用户可设定抓取正文最大长度（2000/5000/10000字符） |
+
+**（2）抓取引擎**
+
+- **基础库**：Playwright（处理JS渲染）+ Requests（处理静态页）
+- **智能降级**：优先使用轻量级Requests，检测到需要JS渲染或反爬时自动切换至Playwright无头浏览器
+- **触发时机**：**每次生成报告时实时抓取**，保证数据最新
+
+#### 1.3.6 邮件发送模块
+
+**（1）发送触发方式**
+
+| 触发方式 | 说明 |
+|----------|------|
+| 生成后自动发送 | 报告状态变更为“已完成”时立即触发 |
+| 手动选择发送 | 用户在报告详情页选择版本和收件人发送 |
+| 定时邮件 | 按Cron表达式定时发送 |
+
+**（2）邮件配置**
+
+| 配置项 | 说明 |
+|--------|------|
+| 发件箱 | 超级管理员统一配置SMTP服务器 |
+| 收件人 | 支持内部用户 + **外部邮箱**（如Gmail、QQ邮箱） |
+| 附件格式 | 用户可勾选PDF / Word / Markdown中的一种或多种 |
+| 邮件组 | 支持创建邮件组（如“质量部全体”）便于复用 |
+
+**（3）外部邮箱白名单**
+
+- **管理范围**：**全局级**，仅超级管理员可维护
+- **生效规则**：所有外发邮件目标地址必须在白名单域名列表中，否则拦截并告警
+- **白名单示例**：`@partner.com`、`@supplier.com`
+
+#### 1.3.7 部门管理员统计看板
+
+| 指标类别 | 具体内容 | 图表类型 |
+|----------|----------|----------|
+| 报告生成次数 | 按日/周/月趋势，支持与上一周期对比 | 折线图 + 柱状图 |
+| 热门关键词排行 | 统计本部门所有报告配置中关键词出现频次 | 横向条形图 / 词云 |
+| 活跃用户排行 | 按“发起生成任务次数”排序，展示前10名 | 排行榜表格 |
+| 模型调用与成本 | 各模型调用次数；**成本由用户自行评估，平台不做任何确认和保障** | 饼图 + 明细表 |
+| 模块生成成功率 | 成功率 = 成功次数 / 总尝试次数，区分失败原因 | 环形图 + 堆叠柱状图 |
+
+
+### 1.4 非功能性需求
+
+| 类别 | 要求 |
+|------|------|
+| 并发 | 全局最大5个任务同时执行 |
+| 报告超时 | 30分钟硬止损，用户可手动终止 |
+| 数据持久化 | 所有报告历史版本永久保存 |
+| 安全性 | API Key加密存储、操作日志全记录 |
+| 部署 | 私有化部署，Docker Compose交付 |
+| 界面风格 | 参考AIHOT轻量信息流风格，支持浅色/深色主题 |
+
+
+## 二、《数据库ER图及表结构设计》
+
+### 2.1 ER图（核心实体关系）
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│   departments   │         │     users       │
+├─────────────────┤         ├─────────────────┤
+│ id (PK)         │◄────────│ id (PK)         │
+│ name            │         │ username        │
+│ code            │         │ email           │
+│ description     │         │ password_hash   │
+│ admin_id (FK)   │────────►│ department_id   │
+│ created_at      │         │ role            │
+└─────────────────┘         │ is_active       │
+          │                  │ created_at      │
+          │                  └─────────────────┘
+          │                           │
+          │                           │ 1
+          │                           │
+          │                  ┌────────┴────────┐
+          │                  │                 │
+          │                  ▼                 ▼
+          │         ┌─────────────────┐ ┌─────────────────┐
+          │         │     reports     │ │user_data_source │
+          │         ├─────────────────┤ │_credentials     │
+          │         │ id (PK)         │ ├─────────────────┤
+          │         │ title           │ │ id (PK)         │
+          │         │ description     │ │ user_id (FK)    │
+          │         │ type            │ │ name            │
+          │         │ department_id   │ │ proxy           │
+          │         │ owner_id (FK)   │ │ cookies         │
+          │         │ is_public       │ │ custom_headers  │
+          │         │ status          │ │ created_at      │
+          │         │ config (JSONB)  │ └─────────────────┘
+          │         │ current_version │
+          │         │ generate_count  │
+          │         │ tags (TEXT[])   │
+          │         │ last_generated  │
+          │         │ created_at      │
+          │         │ updated_at      │
+          │         └─────────────────┘
+          │                  │
+          │                  │ 1
+          │                  │
+          │                  ▼
+          │         ┌─────────────────┐
+          │         │ report_versions │
+          │         ├─────────────────┤
+          │         │ id (PK)         │
+          │         │ report_id (FK)  │
+          │         │ version_number  │
+          │         │ content (JSONB) │
+          │         │ config_snapshot │
+          │         │ model_used      │
+          │         │ status          │
+          │         │ content_hash    │
+          │         │ generated_at    │
+          │         └─────────────────┘
+          │
+          ▼
+┌─────────────────┐         ┌─────────────────┐
+│generation_tasks │         │  email_tasks    │
+├─────────────────┤         ├─────────────────┤
+│ id (PK)         │         │ id (PK)         │
+│ report_id (FK)  │         │ report_id (FK)  │
+│ trigger_type    │         │ trigger_type    │
+│ status          │         │ recipients[]    │
+│ started_at      │         │ formats[]       │
+│ completed_at    │         │ status          │
+│ error_message   │         │ scheduled_at    │
+│ worker_id       │         │ sent_at         │
+└─────────────────┘         │ error_msg       │
+                            └─────────────────┘
+
+┌─────────────────┐         ┌─────────────────┐
+│model_cost_logs  │         │global_email     │
+├─────────────────┤         │_whitelist       │
+│ id (PK)         │         ├─────────────────┤
+│ task_id (FK)    │         │ id (PK)         │
+│ model_provider  │         │ domain          │
+│ model_name      │         │ description     │
+│ prompt_tokens   │         │ created_by (FK) │
+│ completion_tokens│        │ created_at      │
+│ total_tokens    │         └─────────────────┘
+│ unit_price      │
+│ estimated_cost  │
+│ created_at      │
+└─────────────────┘
+```
+
+
+### 2.2 核心表DDL
+
+#### （1）部门表
+
+```sql
+CREATE TABLE departments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    code VARCHAR(50) UNIQUE NOT NULL,
+    description TEXT,
+    admin_id UUID,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### （2）用户表
+
+```sql
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(50) UNIQUE NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    department_id UUID REFERENCES departments(id),
+    role VARCHAR(20) DEFAULT 'user', -- super_admin / dept_admin / user
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### （3）报告表
+
+```sql
+CREATE TABLE reports (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title VARCHAR(200) NOT NULL,
+    description TEXT,
+    type VARCHAR(20) NOT NULL, -- department / personal
+    department_id UUID REFERENCES departments(id),
+    owner_id UUID REFERENCES users(id),
+    is_public BOOLEAN DEFAULT false,
+    status VARCHAR(20) DEFAULT 'draft', -- draft / generating / completed / failed / timeout / terminated
+    config JSONB NOT NULL,
+    current_version INTEGER DEFAULT 0,
+    generate_count INTEGER DEFAULT 0,
+    tags TEXT[],
+    last_generated_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_reports_department ON reports(department_id);
+CREATE INDEX idx_reports_owner ON reports(owner_id);
+CREATE INDEX idx_reports_status ON reports(status);
+```
+
+#### （4）报告历史版本表
+
+```sql
+CREATE TABLE report_versions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    report_id UUID REFERENCES reports(id) ON DELETE CASCADE,
+    version_number INTEGER NOT NULL,
+    content JSONB NOT NULL,
+    config_snapshot JSONB NOT NULL,
+    model_used VARCHAR(100),
+    status VARCHAR(20),
+    content_hash VARCHAR(64),
+    generated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_versions_report ON report_versions(report_id);
+CREATE UNIQUE INDEX idx_versions_report_number ON report_versions(report_id, version_number);
+```
+
+#### （5）生成任务表
+
+```sql
+CREATE TABLE generation_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    report_id UUID REFERENCES reports(id),
+    trigger_type VARCHAR(20), -- manual / scheduled
+    status VARCHAR(20), -- pending / running / success / failed / timeout / terminated
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT,
+    worker_id VARCHAR(50),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_tasks_report ON generation_tasks(report_id);
+CREATE INDEX idx_tasks_status ON generation_tasks(status);
+```
+
+#### （6）用户数据源凭证表
+
+```sql
+CREATE TABLE user_data_source_credentials (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    proxy TEXT, -- 加密存储
+    cookies TEXT, -- 加密存储
+    custom_headers JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_credentials_user ON user_data_source_credentials(user_id);
+```
+
+#### （7）邮件任务表
+
+```sql
+CREATE TABLE email_tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    report_id UUID REFERENCES reports(id),
+    trigger_type VARCHAR(20), -- auto / manual / scheduled
+    recipients TEXT[] NOT NULL,
+    formats TEXT[] NOT NULL, -- ['pdf', 'docx', 'md']
+    status VARCHAR(20) DEFAULT 'pending', -- pending / sent / failed
+    scheduled_at TIMESTAMP,
+    sent_at TIMESTAMP,
+    error_msg TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_email_report ON email_tasks(report_id);
+CREATE INDEX idx_email_status ON email_tasks(status);
+```
+
+#### （8）模型成本日志表
+
+```sql
+CREATE TABLE model_cost_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id UUID REFERENCES generation_tasks(id),
+    model_provider VARCHAR(50),
+    model_name VARCHAR(100),
+    prompt_tokens INT,
+    completion_tokens INT,
+    total_tokens INT,
+    unit_price_per_1k_tokens DECIMAL(10,6),
+    estimated_cost DECIMAL(10,4),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_cost_task ON model_cost_logs(task_id);
+```
+
+#### （9）全局外部邮箱白名单表
+
+```sql
+CREATE TABLE global_email_whitelist (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    domain VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_whitelist_domain ON global_email_whitelist(domain);
+```
+
+
+## 三、《前后端接口定义文档（V1.0）》
+
+### 3.1 通用规范
+
+**Base URL**：`/api/v1`
+
+**认证方式**：Bearer Token（JWT）
+
+**通用响应格式**：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": { ... }
+}
+```
+
+**错误码**：
+
+| 错误码 | 说明 |
+|--------|------|
+| 0 | 成功 |
+| 1001 | 未认证 |
+| 1002 | 无权限 |
+| 1003 | 参数错误 |
+| 1004 | 资源不存在 |
+| 2001 | 任务已存在 |
+| 2002 | 并发限制 |
+| 3001 | 模型调用失败 |
+| 3002 | 抓取失败 |
+| 4001 | 邮件发送失败 |
+
+
+### 3.2 认证接口
+
+#### POST /auth/login
+
+**请求**：
+
+```json
+{
+  "username": "zhangsan",
+  "password": "******"
+}
+```
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "token": "eyJhbGciOiJIUzI1NiIs...",
+    "user": {
+      "id": "uuid",
+      "username": "zhangsan",
+      "email": "zhangsan@company.com",
+      "department_id": "uuid",
+      "department_name": "Care业务部",
+      "role": "user"
+    }
+  }
+}
+```
+
+#### POST /auth/logout
+
+**请求**：无
+
+**响应**：`{"code": 0, "message": "success"}`
+
+
+### 3.3 报告管理接口
+
+#### GET /reports
+
+获取报告列表（带权限过滤）
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| view | string | 否 | my / department / public / all（仅管理员） |
+| department_id | string | 否 | 部门筛选 |
+| tag | string | 否 | 标签筛选 |
+| keyword | string | 否 | 标题搜索 |
+| status | string | 否 | draft / completed / generating |
+| page | int | 否 | 默认1 |
+| page_size | int | 否 | 默认20 |
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "list": [
+      {
+        "id": "uuid",
+        "title": "质量舆情日报",
+        "type": "personal",
+        "department_id": "uuid",
+        "department_name": "Care业务部",
+        "owner_id": "uuid",
+        "owner_name": "张三",
+        "is_public": true,
+        "status": "completed",
+        "current_version": 3,
+        "generate_count": 12,
+        "tags": ["质量", "舆情"],
+        "last_generated_at": "2026-08-17T10:00:00Z",
+        "created_at": "2026-08-01T08:00:00Z"
+      }
+    ],
+    "total": 100,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+#### POST /reports
+
+创建报告
+
+**请求**：
+
+```json
+{
+  "title": "质量舆情日报",
+  "description": "每日监测质量相关舆情",
+  "type": "personal", // 或 "department"
+  "is_public": false, // 仅personal有效
+  "tags": ["质量", "舆情"],
+  "config": {
+    "modules": [
+      {
+        "module_title": "质量舆情监测",
+        "model_config": {
+          "provider": "ascend",
+          "endpoint": "https://xxx.ascend.com/v1/chat/completions",
+          "api_key": "sk-xxx",
+          "model_name": "Qwen3.8-27B",
+          "parameters": {
+            "temperature": 0.7,
+            "max_tokens": 4096
+          }
+        },
+        "keywords": ["质量", "售后", "投诉"],
+        "prompt": "你是一名服务质量管理专家...",
+        "data_sources": {
+          "urls": ["https://example.com/news"],
+          "credential_id": "uuid" // 引用用户凭证库
+        },
+        "schedule": {
+          "type": "daily",
+          "cron": "0 8 * * *"
+        }
+      }
+    ]
+  }
+}
+```
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "id": "uuid",
+    "created_at": "2026-08-17T10:00:00Z"
+  }
+}
+```
+
+#### GET /reports/{id}
+
+获取报告详情
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "id": "uuid",
+    "title": "质量舆情日报",
+    "description": "...",
+    "type": "personal",
+    "department_id": "uuid",
+    "department_name": "Care业务部",
+    "owner_id": "uuid",
+    "owner_name": "张三",
+    "is_public": true,
+    "status": "completed",
+    "current_version": 3,
+    "config": { ... },
+    "tags": ["质量", "舆情"],
+    "last_generated_at": "2026-08-17T10:00:00Z",
+    "created_at": "2026-08-01T08:00:00Z",
+    "updated_at": "2026-08-17T10:00:00Z"
+  }
+}
+```
+
+#### PUT /reports/{id}
+
+更新报告配置
+
+**请求**：同 POST /reports
+
+**响应**：`{"code": 0, "data": {"id": "uuid", "updated_at": "..."}}`
+
+#### DELETE /reports/{id}
+
+删除报告（仅草稿状态可删除）
+
+**响应**：`{"code": 0, "message": "success"}`
+
+
+### 3.4 报告生成接口
+
+#### POST /reports/{id}/generate
+
+触发报告生成
+
+**请求**：
+
+```json
+{
+  "force": false // true表示强制重新生成（忽略配置未变则覆盖的规则）
+}
+```
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "task_id": "uuid",
+    "status": "pending"
+  }
+}
+```
+
+#### GET /reports/{id}/generate/progress
+
+获取生成进度（SSE/WebSocket）
+
+**响应**（SSE流）：
+
+```
+event: progress
+data: {"phase": "fetching", "progress": 25, "message": "正在抓取 https://example.com/news (1/3)..."}
+
+event: progress
+data: {"phase": "generating", "progress": 60, "message": "正在调用昇腾 Qwen3.8-27B 生成..."}
+
+event: complete
+data: {"version": 3, "report_id": "uuid"}
+```
+
+#### POST /reports/{id}/generate/terminate
+
+手动终止生成任务
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "message": "任务已终止"
+}
+```
+
+
+### 3.5 历史版本接口
+
+#### GET /reports/{id}/versions
+
+获取历史版本列表
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "versions": [
+      {
+        "version_number": 3,
+        "generated_at": "2026-08-17T10:00:00Z",
+        "model_used": "Qwen3.8-27B",
+        "status": "success",
+        "is_current": true
+      },
+      {
+        "version_number": 2,
+        "generated_at": "2026-08-16T10:00:00Z",
+        "model_used": "Qwen3.8-27B",
+        "status": "success",
+        "is_current": false
+      }
+    ]
+  }
+}
+```
+
+#### GET /reports/{id}/versions/{version}
+
+获取特定版本内容
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "version_number": 3,
+    "content": {
+      "summary": "...",
+      "modules": [
+        {
+          "module_title": "质量舆情监测",
+          "content": "## 舆情趋势分析\n..."
+        }
+      ]
+    },
+    "config_snapshot": { ... },
+    "model_used": "Qwen3.8-27B",
+    "generated_at": "2026-08-17T10:00:00Z"
+  }
+}
+```
+
+#### POST /reports/{id}/versions/{version}/rollback
+
+回滚至指定版本
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "current_version": 2,
+    "message": "已回滚至版本 2"
+  }
+}
+```
+
+
+### 3.6 导出接口
+
+#### GET /reports/{id}/export
+
+导出报告
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| format | string | 是 | pdf / docx / md |
+| version | int | 否 | 默认最新版本 |
+
+**响应**：文件流（Content-Disposition: attachment）
+
+
+### 3.7 邮件发送接口
+
+#### POST /reports/{id}/email
+
+发送报告邮件
+
+**请求**：
+
+```json
+{
+  "recipients": ["zhangsan@company.com", "partner@partner.com"],
+  "formats": ["pdf", "docx"],
+  "version": 3, // 可选，默认最新
+  "scheduled_at": "2026-08-18T09:00:00Z" // 可选，定时发送
+}
+```
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "task_id": "uuid",
+    "status": "pending"
+  }
+}
+```
+
+#### GET /email/tasks
+
+获取邮件发送记录
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "list": [
+      {
+        "id": "uuid",
+        "report_id": "uuid",
+        "report_title": "质量舆情日报",
+        "recipients": ["zhangsan@company.com"],
+        "formats": ["pdf"],
+        "status": "sent",
+        "sent_at": "2026-08-17T10:05:00Z"
+      }
+    ]
+  }
+}
+```
+
+
+### 3.8 模型配置接口
+
+#### POST /models/test
+
+测试模型连接
+
+**请求**：
+
+```json
+{
+  "provider": "ascend",
+  "endpoint": "https://xxx.ascend.com/v1/chat/completions",
+  "api_key": "sk-xxx",
+  "model_name": "Qwen3.8-27B"
+}
+```
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "success": true,
+    "latency_ms": 123,
+    "message": "连接成功"
+  }
+}
+```
+
+#### GET /models/providers
+
+获取支持的模型提供商列表
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "providers": ["ascend", "openai", "anthropic", "custom"]
+  }
+}
+```
+
+
+### 3.9 数据源凭证接口
+
+#### GET /credentials
+
+获取当前用户的数据源凭证列表
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "id": "uuid",
+      "name": "爬取A网站专用",
+      "proxy": "http://***:****@192.168.1.1:8080", // 脱敏
+      "cookies": "session_id=***", // 脱敏
+      "custom_headers": {"Referer": "https://google.com"},
+      "created_at": "2026-08-01T08:00:00Z"
+    }
+  ]
+}
+```
+
+#### POST /credentials
+
+创建数据源凭证
+
+**请求**：
+
+```json
+{
+  "name": "爬取A网站专用",
+  "proxy": "http://user:pass@192.168.1.1:8080",
+  "cookies": "session_id=abc123; token=xyz",
+  "custom_headers": {"Referer": "https://google.com"}
+}
+```
+
+**响应**：`{"code": 0, "data": {"id": "uuid"}}`
+
+#### PUT /credentials/{id}
+
+更新数据源凭证
+
+**请求**：同 POST
+
+**响应**：`{"code": 0, "message": "success"}`
+
+#### DELETE /credentials/{id}
+
+删除数据源凭证
+
+**响应**：`{"code": 0, "message": "success"}`
+
+
+### 3.10 部门管理接口（部门管理员）
+
+#### GET /department/users
+
+获取本部门用户列表
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "users": [
+      {
+        "id": "uuid",
+        "username": "zhangsan",
+        "email": "zhangsan@company.com",
+        "role": "user",
+        "is_active": true,
+        "report_count": 12,
+        "last_active": "2026-08-17T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+#### POST /department/users
+
+添加部门用户
+
+**请求**：
+
+```json
+{
+  "username": "lisi",
+  "email": "lisi@company.com",
+  "role": "user"
+}
+```
+
+**响应**：`{"code": 0, "data": {"id": "uuid"}}`
+
+#### PUT /department/users/{id}
+
+更新部门用户角色
+
+**请求**：
+
+```json
+{
+  "role": "user" // 或 "dept_admin"
+}
+```
+
+**响应**：`{"code": 0, "message": "success"}`
+
+#### DELETE /department/users/{id}
+
+移除部门用户
+
+**响应**：`{"code": 0, "message": "success"}`
+
+
+### 3.11 统计看板接口（部门管理员）
+
+#### GET /dashboard/statistics
+
+获取部门统计看板数据
+
+**请求参数**：
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| time_range | string | 否 | week / month / quarter，默认month |
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "generate_trend": {
+      "daily": [5, 8, 3, 12, 7, 9, 4],
+      "labels": ["8/11", "8/12", "8/13", "8/14", "8/15", "8/16", "8/17"]
+    },
+    "hot_keywords": [
+      {"keyword": "质量", "count": 23},
+      {"keyword": "售后", "count": 18},
+      {"keyword": "投诉", "count": 14}
+    ],
+    "active_users": [
+      {"username": "张三", "generate_count": 15},
+      {"username": "李四", "generate_count": 10}
+    ],
+    "model_usage": [
+      {"provider": "ascend", "model": "Qwen3.8-27B", "calls": 45},
+      {"provider": "openai", "model": "GPT-4o", "calls": 20}
+    ],
+    "module_success_rate": {
+      "total_attempts": 100,
+      "success": 85,
+      "failed": 15,
+      "failure_reasons": {
+        "model_error": 8,
+        "fetch_timeout": 5,
+        "content_empty": 2
+      }
+    }
+  }
+}
+```
+
+
+### 3.12 系统管理接口（超级管理员）
+
+#### GET /admin/email-whitelist
+
+获取全局外部邮箱白名单
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "domains": [
+      {"id": "uuid", "domain": "@partner.com", "description": "合作伙伴", "created_at": "..."}
+    ]
+  }
+}
+```
+
+#### POST /admin/email-whitelist
+
+添加白名单域名
+
+**请求**：
+
+```json
+{
+  "domain": "@partner.com",
+  "description": "合作伙伴邮箱"
+}
+```
+
+**响应**：`{"code": 0, "data": {"id": "uuid"}}`
+
+#### DELETE /admin/email-whitelist/{id}
+
+删除白名单域名
+
+**响应**：`{"code": 0, "message": "success"}`
+
+#### GET /admin/all-reports
+
+超级管理员查看所有报告
+
+**请求参数**：同 GET /reports，额外支持 department_id 筛选
+
+**响应**：同 GET /reports
+
+#### GET /admin/system/config
+
+获取系统配置
+
+**响应**：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "smtp": {
+      "host": "smtp.company.com",
+      "port": 587,
+      "username": "noreply@company.com",
+      "tls": true
+    },
+    "max_concurrent_tasks": 5,
+    "task_timeout_seconds": 1800
+  }
+}
+```
+
+#### PUT /admin/system/config
+
+更新系统配置
+
+**请求**：同 GET 响应结构
+
+**响应**：`{"code": 0, "message": "success"}`
+
+
+## 四、交付物清单
+
+| 序号 | 交付物 | 状态 |
+|------|--------|------|
+| 1 | 《系统设计说明书（终稿）》 | ✅ 已完成 |
+| 2 | 《数据库ER图及表结构设计》 | ✅ 已完成 |
+| 3 | 《前后端接口定义文档（V1.0）》 | ✅ 已完成 |
+
+以上三份文档已全部输出，可直接用于技术评审、开发排期和立项汇报。如需进一步拆分或调整，请随时告知。

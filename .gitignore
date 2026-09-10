@@ -1,0 +1,42 @@
+# ===== Secrets / 密钥（切勿提交） =====
+.env
+.env.local
+*.env
+# 以下模板文件通过显式 add 保留：.env.example、frontend/.env.example
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# ===== Node / 前端 =====
+node_modules/
+frontend/dist/
+frontend/dist_new/
+frontend/.vite/
+.vite/
+
+# ===== 日志 / Logs =====
+*.log
+*.log.*
+
+# ===== 构建 / 缓存 / 临时 =====
+.cache/
+.temp/
+temp/
+tmp/
+
+# ===== 本地隧道工具二进制(ngrok/cpolar，非源码，可官网重下) =====
+tools/
+
+# ===== 编辑器 / OS =====
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
