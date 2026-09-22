@@ -10,7 +10,7 @@ export class BizError extends Error {
   }
 }
 
-const baseURL = import.meta.env.VITE_API_BASE || '/api/v1';
+const baseURL = import.meta.env.VITE_API_BASE || '/insight-api';
 
 export const http: AxiosInstance = axios.create({
   baseURL,
