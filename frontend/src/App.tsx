@@ -26,7 +26,7 @@ export default function App() {
       }}
     >
       <AntApp>
-        <BrowserRouter>
+        <BrowserRouter basename="/insight">
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
